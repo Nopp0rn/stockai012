@@ -651,7 +651,7 @@
       </div>
 
       <div style="display:none">
-        <input type="password" id="apiKeyInput" class="input-key" value="EAAAlxv5yWVO3t9bdUPjFKSToFXFcYSxKXSqhp9vfsYKlfpNKxGySRx0_alOqYGn">
+        <input type="password" id="apiKeyInput" class="input-key" placeholder="gsk_xxxxxxxxxxxxxxxxxxxx">
       </div>
     </div>
   </div>
@@ -766,7 +766,7 @@
         <div class="ai-header">
           <div class="ai-dot"></div>
           <span style="font-weight:600; font-size:14px">AI Forecast Engine</span>
-          <span class="panel-badge badge-blue">Gemini AI ✦ ฟรี</span>
+          <span class="panel-badge badge-blue">Groq AI ✦ ฟรี</span>
           <div style="margin-left: auto; display: flex; align-items: center; gap: 10px;">
             <div class="toolbar-section">
               <span class="label">หมวดสินค้า:</span>
@@ -1179,7 +1179,7 @@ function renderForecastPanels() {
 async function runAIAnalysis() {
   const apiKey = document.getElementById('apiKeyInput').value.trim();
   if (!apiKey) {
-    alert('กรุณาใส่ Google Gemini API Key ก่อน (อยู่ที่หน้า Upload)');
+    alert('กรุณาใส่ Groq API Key ก่อน (อยู่ที่หน้า Upload)');
     return;
   }
 
@@ -1233,12 +1233,12 @@ Rules:
 CRITICAL: Reply ONLY with a valid JSON object. No text before or after. Start with { end with }
 {"summary":"สรุปสถานการณ์","order_list":[{"item_no":"1070201001001","name":"ชื่อสินค้า","current_stock":0,"daily_sales":8.6,"order_qty":120,"priority":"urgent","reason":"สต็อกหมด"},{"item_no":"1070201001002","name":"ชื่อ2","current_stock":3,"daily_sales":2.1,"order_qty":26,"priority":"high","reason":"เหลือน้อย"}],"insight":"ข้อสังเกต"}`;
 
-  // Models to try in order
+  // Groq Models to try in order (ฟรี เร็วมาก)
   const MODELS = [
-    'gemini-2.5-flash',
-    'gemini-2.5-flash-lite-preview-06-17',
-    'gemini-1.5-flash-8b',
-    'gemini-1.5-pro'
+    'llama-3.3-70b-versatile',
+    'llama-3.1-8b-instant',
+    'gemma2-9b-it',
+    'mixtral-8x7b-32768'
   ];
 
   function setLoadingText(txt) {
@@ -1246,29 +1246,32 @@ CRITICAL: Reply ONLY with a valid JSON object. No text before or after. Start wi
     if (el) el.textContent = txt;
   }
 
-  async function callGemini(apiKey, prompt, modelIndex = 0, attempt = 1) {
+  async function callGroq(apiKey, prompt, modelIndex = 0, attempt = 1) {
     if (modelIndex >= MODELS.length) throw new Error('ทุก model ยุ่งอยู่ กรุณาลองอีกครั้งในอีกสักครู่');
     const model = MODELS[modelIndex];
     setLoadingText(`กำลังวิเคราะห์ด้วย ${model} (ครั้งที่ ${attempt})...`);
 
     let res;
     try {
-      const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-      res = await fetch(url, {
+      res = await fetch('https://api.groq.com/openai/v1/chat/completions', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          'Authorization': `Bearer ${apiKey}`
+        },
         body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: { maxOutputTokens: 4096, temperature: 0.1 }
+          model: model,
+          messages: [{ role: 'user', content: prompt }],
+          max_tokens: 4096,
+          temperature: 0.1
         })
       });
     } catch(networkErr) {
-      // network error — retry same model once then move on
       if (attempt < 2) {
         await new Promise(r => setTimeout(r, 2000));
-        return callGemini(apiKey, prompt, modelIndex, attempt + 1);
+        return callGroq(apiKey, prompt, modelIndex, attempt + 1);
       }
-      return callGemini(apiKey, prompt, modelIndex + 1, 1);
+      return callGroq(apiKey, prompt, modelIndex + 1, 1);
     }
 
     // 503 overloaded or 429 rate-limit: retry same model up to 2x, then next
@@ -1277,36 +1280,35 @@ CRITICAL: Reply ONLY with a valid JSON object. No text before or after. Start wi
         const wait = attempt * 2000;
         setLoadingText(`${model} ยุ่งอยู่ รอ ${wait/1000}s แล้วลองใหม่...`);
         await new Promise(r => setTimeout(r, wait));
-        return callGemini(apiKey, prompt, modelIndex, attempt + 1);
+        return callGroq(apiKey, prompt, modelIndex, attempt + 1);
       }
       setLoadingText(`${model} ยุ่งมาก เปลี่ยน model...`);
       await new Promise(r => setTimeout(r, 1000));
-      return callGemini(apiKey, prompt, modelIndex + 1, 1);
+      return callGroq(apiKey, prompt, modelIndex + 1, 1);
     }
 
     // 404 model not found — skip immediately
     if (res.status === 404) {
-      return callGemini(apiKey, prompt, modelIndex + 1, 1);
+      return callGroq(apiKey, prompt, modelIndex + 1, 1);
     }
 
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
       const msg = err.error?.message || '';
-      // quota error — try next model
-      if (msg.includes('quota') || msg.includes('RESOURCE_EXHAUSTED')) {
-        return callGemini(apiKey, prompt, modelIndex + 1, 1);
+      if (msg.includes('quota') || msg.includes('rate_limit')) {
+        return callGroq(apiKey, prompt, modelIndex + 1, 1);
       }
       throw new Error(msg || `HTTP ${res.status}`);
     }
 
     const data = await res.json();
-    const text = data.candidates?.[0]?.content?.parts?.[0]?.text || '';
-    if (!text) return callGemini(apiKey, prompt, modelIndex + 1, 1);
+    const text = data.choices?.[0]?.message?.content || '';
+    if (!text) return callGroq(apiKey, prompt, modelIndex + 1, 1);
     return text;
   }
 
   try {
-    const text = await callGemini(apiKey, prompt);
+    const text = await callGroq(apiKey, prompt);
 
     const dispCatName = cat === 'all' ? '' : (cat === 'P' ? 'P-Urgent Part' : CAT_MAP[cat]?.full || cat);
     displayAIResult(text, dispCatName);
@@ -1454,7 +1456,7 @@ function displayAIResult(text, cat) {
     ${insight ? `<div class="ai-text" style="margin-top:1rem;padding:10px 14px;background:var(--bg3);border-radius:var(--radius);border-left:3px solid var(--purple);font-size:13px">💡 ${insight}</div>` : ''}
 
     <div style="margin-top:1rem;padding-top:1rem;border-top:1px solid var(--border);font-size:11px;color:var(--text3)">
-      วิเคราะห์โดย Gemini AI • ${new Date().toLocaleString('th-TH')}
+      วิเคราะห์โดย Groq AI • ${new Date().toLocaleString('th-TH')}
     </div>
   `;
 }
